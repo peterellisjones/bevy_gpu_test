@@ -19,7 +19,7 @@ bevy = { version = "^0.18", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-bytemuck = { version = "*", features = ["derive"] }
+bytemuck = { version = "1", features = ["derive"] }
 
 [lints.clippy]
 pedantic = { level = "deny", priority = -1 }
