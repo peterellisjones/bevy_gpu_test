@@ -112,8 +112,12 @@ fn vertex_displacement_matches_cpu() {
         assert!(
             dx < 1e-5 && dy < 1e-5 && dz < 1e-5,
             "Vertex {i}: GPU=({:.6}, {:.6}, {:.6}) CPU=({:.6}, {:.6}, {:.6}) diff=({dx:.2e}, {dy:.2e}, {dz:.2e})",
-            gpu.displaced_x, gpu.displaced_y, gpu.displaced_z,
-            cpu[0], cpu[1], cpu[2],
+            gpu.displaced_x,
+            gpu.displaced_y,
+            gpu.displaced_z,
+            cpu[0],
+            cpu[1],
+            cpu[2],
         );
     }
 }

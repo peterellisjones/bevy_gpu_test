@@ -144,6 +144,20 @@ Tests run on the real GPU with the real WGSL compiler. No mocking.
 | `@binding(1)` | `storage<read>` | Input buffer |
 | `@binding(2)` | `storage<read_write>` | Output buffer |
 
+## Timeout and diagnostics
+
+Tests time out after 5 seconds by default. If the shader fails to compile or the pipeline never becomes ready, the panic message includes the pipeline state and common failure causes.
+
+Override the timeout:
+
+```rust
+use std::time::Duration;
+
+let results: Vec<Output> = ComputeTest::new("shaders/complex.wgsl", inputs)
+    .with_timeout(Duration::from_secs(60))
+    .run();
+```
+
 ## Requirements
 
 - Bevy 0.18

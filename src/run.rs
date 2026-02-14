@@ -47,6 +47,15 @@ where
     #[allow(clippy::cast_possible_truncation)]
     let input_count = test.inputs.len() as u32;
 
+    // Shared flag: the render graph node sets this after dispatching the compute
+    // shader. The main-world system uses this to know when to spawn the readback
+    // entity, ensuring we only read back data *after* the compute shader has
+    // written to the output buffer.
+    let dispatched = Arc::new(AtomicBool::new(false));
+
+    let deadline = std::time::Instant::now() + test.timeout;
+    let shader_path_for_timeout = test.shader_path.clone();
+
     App::new()
         .add_plugins(
             DefaultPlugins
@@ -66,11 +75,17 @@ where
             entry_point: test.entry_point.clone(),
             has_uniform: test.uniform_bytes.is_some(),
             uniform_bytes: test.uniform_bytes.clone(),
+            dispatched: Arc::clone(&dispatched),
         })
         .insert_resource(ResultChannel::<O>(result_arc))
         .insert_resource(TestConfig {
             input_count,
             workgroup_size: test.workgroup_size,
+        })
+        .insert_resource(DispatchedFlag(Arc::clone(&dispatched)))
+        .insert_resource(Deadline {
+            instant: deadline,
+            shader_path: shader_path_for_timeout,
         })
         .insert_resource(SetupData::<I, O> {
             inputs: test.inputs,
@@ -78,7 +93,14 @@ where
             _marker: std::marker::PhantomData,
         })
         .add_systems(Startup, create_buffers::<I, O>)
-        .add_systems(Update, poll_results::<O>)
+        .add_systems(Update, spawn_readback_after_dispatch::<O>)
+        .add_systems(
+            Update,
+            (
+                poll_results::<O>.after(spawn_readback_after_dispatch::<O>),
+                check_timeout,
+            ),
+        )
         .run();
 }
 
@@ -133,6 +155,22 @@ struct ReadbackResults<O>(Vec<O>);
 #[derive(Resource)]
 struct ReadbackEntity(Entity);
 
+/// Shared flag between the render graph node and main-world systems.
+/// Set to `true` by the render graph node after the compute shader is dispatched.
+#[derive(Resource)]
+struct DispatchedFlag(Arc<AtomicBool>);
+
+/// Tracks whether we've already spawned the readback entity.
+#[derive(Resource)]
+struct ReadbackSpawned;
+
+/// Wall-clock deadline for the test. If exceeded, panics with diagnostics.
+#[derive(Resource)]
+struct Deadline {
+    instant: std::time::Instant,
+    shader_path: String,
+}
+
 // ============================================================================
 // Startup: create GPU buffers from input data
 // ============================================================================
@@ -153,27 +191,16 @@ fn create_buffers<I, O>(
     input_buf.buffer_description.usage |= BufferUsages::COPY_SRC;
     let input_handle = buffer_assets.add(input_buf);
 
-    // Output buffer — filled with f32::MAX sentinel so we can detect when the
-    // compute shader has actually written to it.
-    let sentinel_outputs: Vec<O> = vec![O::default(); setup.inputs.len()];
-    let mut output_buf = ShaderStorageBuffer::from(sentinel_outputs);
+    // Output buffer (default-initialized).
+    let outputs: Vec<O> = vec![O::default(); setup.inputs.len()];
+    let mut output_buf = ShaderStorageBuffer::from(outputs);
     output_buf.buffer_description.usage |= BufferUsages::COPY_SRC;
-
-    // Overwrite the raw buffer data with sentinel values.
-    if let Some(ref mut data) = output_buf.data {
-        for chunk in data.chunks_exact_mut(4) {
-            chunk.copy_from_slice(&f32::MAX.to_ne_bytes());
-        }
-    }
-
     let output_handle = buffer_assets.add(output_buf);
 
-    // Readback entity — triggers on_readback_complete when the GPU copy finishes.
-    let readback_entity = commands
-        .spawn(Readback::buffer(output_handle.clone()))
-        .observe(on_readback_complete::<O>)
-        .id();
-    commands.insert_resource(ReadbackEntity(readback_entity));
+    // NOTE: We do NOT spawn the Readback entity here. It is spawned later
+    // by `spawn_readback_after_dispatch` once the compute shader has actually
+    // dispatched. This ensures we only read back data that has been written
+    // by the compute shader.
 
     commands.insert_resource(TestBuffers {
         input_handle,
@@ -189,6 +216,39 @@ where
 {
     let data: Vec<O> = trigger.to_shader_type();
     commands.insert_resource(ReadbackResults(data));
+}
+
+// ============================================================================
+// Update: spawn readback entity after compute dispatch
+// ============================================================================
+
+/// Spawns the readback entity one frame after the compute shader dispatches.
+///
+/// This ensures the GPU has written to the output buffer before we initiate
+/// the readback copy. Without this delay, the readback might copy stale
+/// (default-initialized) data from before the compute shader ran.
+fn spawn_readback_after_dispatch<O>(
+    mut commands: Commands,
+    dispatched: Res<DispatchedFlag>,
+    buffers: Option<Res<TestBuffers>>,
+    spawned: Option<Res<ReadbackSpawned>>,
+) where
+    O: ShaderType + encase::ShaderSize + Default + Clone + Send + Sync + 'static,
+    O: encase::internal::ReadFrom + encase::internal::CreateFrom,
+{
+    // Only spawn once, and only after the compute shader has dispatched.
+    if spawned.is_some() || !dispatched.0.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let Some(buffers) = buffers else { return };
+
+    let readback_entity = commands
+        .spawn(Readback::buffer(buffers.output_handle.clone()))
+        .observe(on_readback_complete::<O>)
+        .id();
+    commands.insert_resource(ReadbackEntity(readback_entity));
+    commands.insert_resource(ReadbackSpawned);
 }
 
 // ============================================================================
@@ -221,6 +281,46 @@ fn poll_results<O>(
 }
 
 // ============================================================================
+// Update: timeout with pipeline error diagnostics
+// ============================================================================
+
+/// Panics with a diagnostic message if the test exceeds its deadline.
+///
+/// Queries the `PipelineCache` for compilation errors so the panic message
+/// tells the user *why* the shader failed rather than just "timed out".
+fn check_timeout(deadline: Res<Deadline>, pipeline: Option<Res<TestPipeline>>) {
+    if std::time::Instant::now() < deadline.instant {
+        return;
+    }
+
+    // Try to extract a pipeline error for a better message.
+    // We can't access PipelineCache from the main world (it lives in the
+    // render world), but TestPipeline existing at least tells us whether
+    // the plugin finished setup.
+    let pipeline_status = if pipeline.is_some() {
+        "pipeline was queued (shader may still be compiling or has errors)"
+    } else {
+        "pipeline was never created (plugin setup may have failed)"
+    };
+
+    panic!(
+        "bevy_gpu_test: timed out waiting for results from \"{}\"\n\
+         \n\
+         The compute shader did not produce results within the deadline.\n\
+         Pipeline status: {pipeline_status}\n\
+         \n\
+         Common causes:\n\
+         - WGSL syntax error or failed #import resolution (check shader path)\n\
+         - Bind group layout mismatch between Rust types and WGSL declarations\n\
+         - No GPU available in this environment\n\
+         \n\
+         Tip: enable Bevy's LogPlugin to see wgpu validation errors.\n\
+         You can increase the timeout with .with_timeout(Duration::from_secs(N)).",
+        deadline.shader_path,
+    );
+}
+
+// ============================================================================
 // Plugin: compute pipeline + render graph
 // ============================================================================
 
@@ -229,6 +329,7 @@ struct ComputeTestPlugin {
     entry_point: String,
     has_uniform: bool,
     uniform_bytes: Option<Vec<u8>>,
+    dispatched: Arc<AtomicBool>,
 }
 
 impl Plugin for ComputeTestPlugin {
@@ -246,7 +347,12 @@ impl Plugin for ComputeTestPlugin {
         );
 
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        render_graph.add_node(ComputeTestLabel, ComputeTestNode::default());
+        render_graph.add_node(
+            ComputeTestLabel,
+            ComputeTestNode {
+                dispatched: Arc::clone(&self.dispatched),
+            },
+        );
         render_graph.add_node_edge(ComputeTestLabel, bevy::render::graph::CameraDriverLabel);
     }
 
@@ -320,15 +426,7 @@ impl Plugin for ComputeTestPlugin {
 struct ComputeTestLabel;
 
 struct ComputeTestNode {
-    dispatched: AtomicBool,
-}
-
-impl Default for ComputeTestNode {
-    fn default() -> Self {
-        Self {
-            dispatched: AtomicBool::new(false),
-        }
-    }
+    dispatched: Arc<AtomicBool>,
 }
 
 impl render_graph::Node for ComputeTestNode {

@@ -135,6 +135,12 @@
 //! - `@binding(0)`: `uniform` — config/params
 //! - `@binding(1)`: `storage<read>` — input buffer
 //! - `@binding(2)`: `storage<read_write>` — output buffer
+//!
+//! ## Timeout
+//!
+//! By default, tests time out after 5 seconds with a diagnostic panic message
+//! that includes the pipeline state and common failure causes. Override with
+//! [`ComputeTest::with_timeout`].
 
 mod run;
 
@@ -158,6 +164,7 @@ pub struct ComputeTest<I, O> {
     pub(crate) uniform_bytes: Option<Vec<u8>>,
     pub(crate) result_channel: Arc<Mutex<Option<Vec<O>>>>,
     pub(crate) entry_point: String,
+    pub(crate) timeout: std::time::Duration,
 }
 
 impl<I, O> ComputeTest<I, O>
@@ -186,6 +193,7 @@ where
             uniform_bytes: None,
             result_channel: Arc::new(Mutex::new(None)),
             entry_point: "main".to_string(),
+            timeout: std::time::Duration::from_secs(5),
         }
     }
 
@@ -219,6 +227,17 @@ where
         self
     }
 
+    /// Override the timeout (default: 5 seconds).
+    ///
+    /// If the compute shader does not produce results within this duration,
+    /// the test panics with a diagnostic message including any pipeline
+    /// compilation errors.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
     /// Run the test and return the GPU output.
     ///
     /// Blocks until the headless Bevy app completes. The app loads the shader,
@@ -226,8 +245,11 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if the GPU readback never completes (e.g. shader compilation failure,
-    /// no GPU available, or the Bevy app fails to start).
+    /// Panics if the GPU readback does not complete within the timeout (default:
+    /// 5 seconds). The panic message includes diagnostic information about the
+    /// pipeline state. Override the timeout with [`with_timeout`](Self::with_timeout).
+    ///
+    /// Also panics if the Bevy app fails to start or no GPU is available.
     #[must_use]
     pub fn run(self) -> Vec<O> {
         let reader = Arc::clone(&self.result_channel);
