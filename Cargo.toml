@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A test harness for running GPU compute shaders in Bevy and reading back results for CPU-side assertions"
-repository = "https://github.com/pj/bevy_gpu_test"
+repository = "https://github.com/peterellisjones/bevy_gpu_test"
 keywords = ["bevy", "gpu", "testing", "compute", "wgsl"]
 categories = ["game-development", "development-tools::testing", "rendering::engine"]
 
