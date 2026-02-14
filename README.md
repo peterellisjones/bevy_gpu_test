@@ -12,7 +12,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-bevy_gpu_test = "0.1"
+bevy_gpu_test = "*"
 ```
 
 Write a compute shader (`assets/shaders/add.wgsl`):
