@@ -1,6 +1,6 @@
 [package]
 name = "bevy_gpu_test"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A test harness for running GPU compute shaders in Bevy and reading back results for CPU-side assertions"
@@ -9,7 +9,7 @@ keywords = ["bevy", "gpu", "testing", "compute", "wgsl"]
 categories = ["game-development", "development-tools::testing", "rendering::engine"]
 
 [dependencies]
-bevy = { version = "^0.18", default-features = false, features = [
+bevy = { version = "^0.18.0", default-features = false, features = [
     "bevy_asset",
     "bevy_render",
     "bevy_core_pipeline",
