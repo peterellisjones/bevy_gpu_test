@@ -165,6 +165,7 @@ pub struct ComputeTest<I, O> {
     pub(crate) result_channel: Arc<Mutex<Option<Vec<O>>>>,
     pub(crate) entry_point: String,
     pub(crate) timeout: std::time::Duration,
+    pub(crate) app_setup: Option<Box<dyn FnOnce(&mut bevy::app::App)>>,
 }
 
 impl<I, O> ComputeTest<I, O>
@@ -194,6 +195,7 @@ where
             result_channel: Arc::new(Mutex::new(None)),
             entry_point: "main".to_string(),
             timeout: std::time::Duration::from_secs(5),
+            app_setup: None,
         }
     }
 
@@ -224,6 +226,32 @@ where
     #[must_use]
     pub fn with_entry_point(mut self, entry_point: impl Into<String>) -> Self {
         self.entry_point = entry_point.into();
+        self
+    }
+
+    /// Run a setup closure on the headless `App` before it runs.
+    ///
+    /// Use this when your compute shader `#import`s WGSL that is not an on-disk
+    /// asset — e.g. an in-memory custom-import shader library registered into
+    /// `Assets<Shader>` by a plugin. The closure runs after `DefaultPlugins`
+    /// (so `Assets<Shader>` exists) and before the compute pipeline is queued,
+    /// so the imported modules are available when the shader composes.
+    ///
+    /// ```rust,no_run
+    /// # use bevy_gpu_test::ComputeTest;
+    /// # #[derive(Clone, Copy, bevy::render::render_resource::ShaderType)]
+    /// # struct In { x: f32, _p1: f32, _p2: f32, _p3: f32 }
+    /// # #[derive(Clone, Copy, Default, bevy::render::render_resource::ShaderType)]
+    /// # struct Out { v: f32, _p1: f32, _p2: f32, _p3: f32 }
+    /// # fn my_shader_plugin(_app: &mut bevy::app::App) {}
+    /// # let inputs: Vec<In> = vec![];
+    /// let results: Vec<Out> = ComputeTest::new("shaders/test.wgsl", inputs)
+    ///     .with_app_setup(my_shader_plugin)
+    ///     .run();
+    /// ```
+    #[must_use]
+    pub fn with_app_setup(mut self, setup: impl FnOnce(&mut bevy::app::App) + 'static) -> Self {
+        self.app_setup = Some(Box::new(setup));
         self
     }
 

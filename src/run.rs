@@ -34,7 +34,7 @@ use crate::ComputeTest;
 // Public entry point
 // ============================================================================
 
-pub(crate) fn run_compute_test<I, O>(test: ComputeTest<I, O>)
+pub(crate) fn run_compute_test<I, O>(mut test: ComputeTest<I, O>)
 where
     I: ShaderType + encase::ShaderSize + Clone + Send + Sync + 'static,
     O: ShaderType + encase::ShaderSize + Default + Clone + Send + Sync + 'static,
@@ -55,9 +55,10 @@ where
 
     let deadline = std::time::Instant::now() + test.timeout;
     let shader_path_for_timeout = test.shader_path.clone();
+    let app_setup = test.app_setup.take();
 
-    App::new()
-        .add_plugins(
+    let mut app = App::new();
+    app.add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: None,
@@ -100,8 +101,13 @@ where
                 poll_results::<O>.after(spawn_readback_after_dispatch::<O>),
                 check_timeout,
             ),
-        )
-        .run();
+        );
+
+    if let Some(setup) = app_setup {
+        setup(&mut app);
+    }
+
+    app.run();
 }
 
 // ============================================================================
