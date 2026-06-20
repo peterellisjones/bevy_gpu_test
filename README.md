@@ -160,8 +160,12 @@ let results: Vec<Output> = ComputeTest::new("shaders/complex.wgsl", inputs)
 
 ## Requirements
 
-- Bevy 0.18
+- Bevy 0.19
 - A GPU (integrated or discrete) -- tests will fail on headless CI without one
+
+## AI assistance
+
+This crate was developed with the help of AI coding tools.
 
 ## License
 

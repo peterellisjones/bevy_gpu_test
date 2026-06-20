@@ -12,7 +12,6 @@ use bevy::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         gpu_readback::{Readback, ReadbackComplete},
         render_asset::RenderAssets,
-        render_graph::{self, RenderGraph, RenderLabel},
         render_resource::{
             binding_types::{
                 storage_buffer_read_only_sized, storage_buffer_sized, uniform_buffer_sized,
@@ -21,8 +20,8 @@ use bevy::{
             BufferInitDescriptor, BufferUsages, CachedComputePipelineId, ComputePassDescriptor,
             ComputePipelineDescriptor, PipelineCache, ShaderStages, ShaderType,
         },
-        renderer::{RenderContext, RenderDevice},
-        storage::{GpuShaderStorageBuffer, ShaderStorageBuffer},
+        renderer::{RenderContext, RenderDevice, RenderGraph, RenderGraphSystems},
+        storage::{GpuShaderBuffer, ShaderBuffer},
         Render, RenderApp, RenderSystems,
     },
     winit::WinitPlugin,
@@ -59,49 +58,49 @@ where
 
     let mut app = App::new();
     app.add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: None,
-                    exit_condition: bevy::window::ExitCondition::DontExit,
-                    ..default()
-                })
-                .disable::<WinitPlugin>()
-                .disable::<bevy::log::LogPlugin>()
-                .add(ScheduleRunnerPlugin::run_loop(
-                    std::time::Duration::from_millis(16),
-                )),
-        )
-        .add_plugins(ComputeTestPlugin {
-            shader_path: test.shader_path.clone(),
-            entry_point: test.entry_point.clone(),
-            has_uniform: test.uniform_bytes.is_some(),
-            uniform_bytes: test.uniform_bytes.clone(),
-            dispatched: Arc::clone(&dispatched),
-        })
-        .insert_resource(ResultChannel::<O>(result_arc))
-        .insert_resource(TestConfig {
-            input_count,
-            workgroup_size: test.workgroup_size,
-        })
-        .insert_resource(DispatchedFlag(Arc::clone(&dispatched)))
-        .insert_resource(Deadline {
-            instant: deadline,
-            shader_path: shader_path_for_timeout,
-        })
-        .insert_resource(SetupData::<I, O> {
-            inputs: test.inputs,
-            uniform_bytes: test.uniform_bytes,
-            _marker: std::marker::PhantomData,
-        })
-        .add_systems(Startup, create_buffers::<I, O>)
-        .add_systems(Update, spawn_readback_after_dispatch::<O>)
-        .add_systems(
-            Update,
-            (
-                poll_results::<O>.after(spawn_readback_after_dispatch::<O>),
-                check_timeout,
-            ),
-        );
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<WinitPlugin>()
+            .disable::<bevy::log::LogPlugin>()
+            .add(ScheduleRunnerPlugin::run_loop(
+                std::time::Duration::from_millis(16),
+            )),
+    )
+    .add_plugins(ComputeTestPlugin {
+        shader_path: test.shader_path.clone(),
+        entry_point: test.entry_point.clone(),
+        has_uniform: test.uniform_bytes.is_some(),
+        uniform_bytes: test.uniform_bytes.clone(),
+        dispatched: Arc::clone(&dispatched),
+    })
+    .insert_resource(ResultChannel::<O>(result_arc))
+    .insert_resource(TestConfig {
+        input_count,
+        workgroup_size: test.workgroup_size,
+    })
+    .insert_resource(DispatchedFlag(Arc::clone(&dispatched)))
+    .insert_resource(Deadline {
+        instant: deadline,
+        shader_path: shader_path_for_timeout,
+    })
+    .insert_resource(SetupData::<I, O> {
+        inputs: test.inputs,
+        uniform_bytes: test.uniform_bytes,
+        _marker: std::marker::PhantomData,
+    })
+    .add_systems(Startup, create_buffers::<I, O>)
+    .add_systems(Update, spawn_readback_after_dispatch::<O>)
+    .add_systems(
+        Update,
+        (
+            poll_results::<O>.after(spawn_readback_after_dispatch::<O>),
+            check_timeout,
+        ),
+    );
 
     if let Some(setup) = app_setup {
         setup(&mut app);
@@ -129,8 +128,8 @@ struct SetupData<I, O> {
 /// Holds the GPU buffer handles, extracted to the render world.
 #[derive(Resource, Clone, ExtractResource)]
 struct TestBuffers {
-    input_handle: Handle<ShaderStorageBuffer>,
-    output_handle: Handle<ShaderStorageBuffer>,
+    input_handle: Handle<ShaderBuffer>,
+    output_handle: Handle<ShaderBuffer>,
     uniform_bytes: Option<Vec<u8>>,
 }
 
@@ -184,7 +183,7 @@ struct Deadline {
 fn create_buffers<I, O>(
     mut commands: Commands,
     setup: Res<SetupData<I, O>>,
-    mut buffer_assets: ResMut<Assets<ShaderStorageBuffer>>,
+    mut buffer_assets: ResMut<Assets<ShaderBuffer>>,
 ) where
     I: ShaderType + encase::ShaderSize + Clone + Send + Sync + 'static,
     O: ShaderType + encase::ShaderSize + Default + Clone + Send + Sync + 'static,
@@ -193,13 +192,13 @@ fn create_buffers<I, O>(
     O: encase::internal::ReadFrom + encase::internal::CreateFrom,
 {
     // Input buffer
-    let mut input_buf = ShaderStorageBuffer::from(setup.inputs.clone());
+    let mut input_buf = ShaderBuffer::from(setup.inputs.clone());
     input_buf.buffer_description.usage |= BufferUsages::COPY_SRC;
     let input_handle = buffer_assets.add(input_buf);
 
     // Output buffer (default-initialized).
     let outputs: Vec<O> = vec![O::default(); setup.inputs.len()];
-    let mut output_buf = ShaderStorageBuffer::from(outputs);
+    let mut output_buf = ShaderBuffer::from(outputs);
     output_buf.buffer_description.usage |= BufferUsages::COPY_SRC;
     let output_handle = buffer_assets.add(output_buf);
 
@@ -347,19 +346,20 @@ impl Plugin for ComputeTestPlugin {
             return;
         };
 
-        render_app.add_systems(
-            Render,
-            prepare_bind_group.in_set(RenderSystems::PrepareBindGroups),
-        );
-
-        let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        render_graph.add_node(
-            ComputeTestLabel,
-            ComputeTestNode {
-                dispatched: Arc::clone(&self.dispatched),
-            },
-        );
-        render_graph.add_node_edge(ComputeTestLabel, bevy::render::graph::CameraDriverLabel);
+        // The render graph is a schedule in Bevy 0.19: the compute dispatch is a
+        // system in the `RenderGraph` schedule (driven by `render_system`) rather
+        // than a `render_graph::Node`. The dispatch flag is shared with the main
+        // world via the same `Arc`, inserted into the render world here.
+        render_app
+            .insert_resource(DispatchedFlag(Arc::clone(&self.dispatched)))
+            .add_systems(
+                Render,
+                prepare_bind_group.in_set(RenderSystems::PrepareBindGroups),
+            )
+            .add_systems(
+                RenderGraph,
+                compute_test_system.in_set(RenderGraphSystems::Render),
+            );
     }
 
     fn finish(&self, app: &mut App) {
@@ -409,7 +409,7 @@ impl Plugin for ComputeTestPlugin {
         let pipeline_id = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("bevy_gpu_test_pipeline".into()),
             layout: vec![bind_group_layout.clone()],
-            push_constant_ranges: vec![],
+            immediate_size: 0,
             shader,
             shader_defs: vec![],
             entry_point: Some(self.entry_point.clone().into()),
@@ -425,43 +425,33 @@ impl Plugin for ComputeTestPlugin {
 }
 
 // ============================================================================
-// Render graph node
+// Compute dispatch system (runs in the `RenderGraph` schedule)
 // ============================================================================
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
-struct ComputeTestLabel;
+/// Records and dispatches the compute pass exactly once. In Bevy 0.19 the render
+/// graph is a schedule, so this is a plain system taking [`RenderContext`] as a
+/// system parameter rather than a `render_graph::Node`.
+fn compute_test_system(
+    mut render_context: RenderContext,
+    dispatched: Res<DispatchedFlag>,
+    pipeline: Option<Res<TestPipeline>>,
+    bind_group: Option<Res<TestBindGroup>>,
+    config: Option<Res<TestConfig>>,
+    pipeline_cache: Res<PipelineCache>,
+) {
+    if dispatched.0.load(Ordering::Relaxed) {
+        return;
+    }
 
-struct ComputeTestNode {
-    dispatched: Arc<AtomicBool>,
-}
+    let (Some(pipeline), Some(bind_group), Some(config)) = (pipeline, bind_group, config) else {
+        return;
+    };
 
-impl render_graph::Node for ComputeTestNode {
-    fn run<'w>(
-        &self,
-        _graph: &mut render_graph::RenderGraphContext,
-        render_context: &mut RenderContext<'w>,
-        world: &'w World,
-    ) -> Result<(), render_graph::NodeRunError> {
-        if self.dispatched.load(Ordering::Relaxed) {
-            return Ok(());
-        }
+    let Some(compute_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.pipeline_id) else {
+        return;
+    };
 
-        let Some(pipeline) = world.get_resource::<TestPipeline>() else {
-            return Ok(());
-        };
-        let Some(bind_group) = world.get_resource::<TestBindGroup>() else {
-            return Ok(());
-        };
-        let Some(config) = world.get_resource::<TestConfig>() else {
-            return Ok(());
-        };
-
-        let pipeline_cache = world.resource::<PipelineCache>();
-        let Some(compute_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.pipeline_id)
-        else {
-            return Ok(());
-        };
-
+    {
         let mut pass = render_context
             .command_encoder()
             .begin_compute_pass(&ComputePassDescriptor::default());
@@ -471,11 +461,9 @@ impl render_graph::Node for ComputeTestNode {
 
         let workgroups = config.input_count.div_ceil(config.workgroup_size);
         pass.dispatch_workgroups(workgroups, 1, 1);
-
-        self.dispatched.store(true, Ordering::Relaxed);
-
-        Ok(())
     }
+
+    dispatched.0.store(true, Ordering::Relaxed);
 }
 
 // ============================================================================
@@ -489,7 +477,7 @@ fn prepare_bind_group(
     buffers: Option<Res<TestBuffers>>,
     pipeline_cache: Res<PipelineCache>,
     render_device: Res<RenderDevice>,
-    buffer_assets: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    buffer_assets: Res<RenderAssets<GpuShaderBuffer>>,
 ) {
     let Some(pipeline) = pipeline else { return };
     let Some(buffers) = buffers else { return };
