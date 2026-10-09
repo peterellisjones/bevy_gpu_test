@@ -101,17 +101,18 @@ The corresponding shader layout:
 
 ## Testing non-compute shaders
 
-You can test any WGSL code, not just compute shaders. Write your reusable logic as WGSL functions, `#import` them into a thin compute shader wrapper, and test through that:
+You can test any WGSL code, not just compute shaders. Write your reusable logic as WGSL functions in a `.wesl` module, `import` it into a thin compute shader wrapper, and test through that. Bevy 0.20 resolves shader imports only in WESL, so both files use the `.wesl` extension:
 
 ```wgsl
-#import "shaders/my_vertex_logic.wgsl" as vertex_logic
+// assets/shaders/my_vertex_logic_test.wesl
+import package::shaders::my_vertex_logic;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if i >= arrayLength(&inputs) { return; }
     // Call the function you're actually testing
-    let displaced = vertex_logic::displace(inputs[i].position, config.time);
+    let displaced = my_vertex_logic::displace(inputs[i].position, config.time);
     outputs[i] = Output(displaced.x, displaced.y, displaced.z, 0.0);
 }
 ```
@@ -160,7 +161,7 @@ let results: Vec<Output> = ComputeTest::new("shaders/complex.wgsl", inputs)
 
 ## Requirements
 
-- Bevy 0.19
+- Bevy 0.20
 - A GPU (integrated or discrete) -- tests will fail on headless CI without one
 
 ## AI assistance

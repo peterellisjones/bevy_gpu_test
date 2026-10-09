@@ -109,8 +109,9 @@
 //! ## Testing non-compute shaders
 //!
 //! You can test *any* WGSL code this way, not just compute shaders. Write your
-//! reusable logic as WGSL functions, `#import` them into a thin compute shader
-//! wrapper, and test through that. Vertex displacement, fragment math, noise,
+//! reusable logic as WGSL functions in a `.wesl` module, `import` it into a thin
+//! `.wesl` compute shader wrapper (Bevy resolves shader imports only in WESL), and
+//! test through that. Vertex displacement, fragment math, noise,
 //! simulation — if it runs on the GPU, you can test it.
 //!
 //! ## How it works
@@ -148,6 +149,9 @@ use bevy::render::render_resource::{encase, ShaderType};
 use run::run_compute_test;
 use std::sync::{Arc, Mutex};
 
+/// A one-shot setup hook run on the headless `App` (see [`ComputeTest::with_app_setup`]).
+type AppSetup = Box<dyn FnOnce(&mut bevy::app::App)>;
+
 /// Builder for a GPU compute test.
 ///
 /// Configures a headless Bevy app that loads a compute shader, uploads input data
@@ -165,7 +169,7 @@ pub struct ComputeTest<I, O> {
     pub(crate) result_channel: Arc<Mutex<Option<Vec<O>>>>,
     pub(crate) entry_point: String,
     pub(crate) timeout: std::time::Duration,
-    pub(crate) app_setup: Option<Box<dyn FnOnce(&mut bevy::app::App)>>,
+    pub(crate) app_setup: Option<AppSetup>,
 }
 
 impl<I, O> ComputeTest<I, O>
@@ -231,7 +235,7 @@ where
 
     /// Run a setup closure on the headless `App` before it runs.
     ///
-    /// Use this when your compute shader `#import`s WGSL that is not an on-disk
+    /// Use this when your compute shader `import`s WESL that is not an on-disk
     /// asset — e.g. an in-memory custom-import shader library registered into
     /// `Assets<Shader>` by a plugin. The closure runs after `DefaultPlugins`
     /// (so `Assets<Shader>` exists) and before the compute pipeline is queued,
