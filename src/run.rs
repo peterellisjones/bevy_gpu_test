@@ -7,6 +7,7 @@ use std::sync::{
 
 use bevy::{
     app::ScheduleRunnerPlugin,
+    asset::RenderAssetUsages,
     prelude::*,
     render::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
@@ -127,6 +128,7 @@ struct SetupData<I, O> {
 
 /// Holds the GPU buffer handles, extracted to the render world.
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 struct TestBuffers {
     input_handle: Handle<ShaderBuffer>,
     output_handle: Handle<ShaderBuffer>,
@@ -135,6 +137,7 @@ struct TestBuffers {
 
 /// Dispatch configuration, extracted to the render world.
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 struct TestConfig {
     input_count: u32,
     workgroup_size: u32,
@@ -192,14 +195,14 @@ fn create_buffers<I, O>(
     O: encase::internal::ReadFrom + encase::internal::CreateFrom,
 {
     // Input buffer
-    let mut input_buf = ShaderBuffer::from(setup.inputs.clone());
-    input_buf.buffer_description.usage |= BufferUsages::COPY_SRC;
+    let mut input_buf = encase_shader_buffer(&setup.inputs);
+    input_buf.buffer_usage |= BufferUsages::COPY_SRC;
     let input_handle = buffer_assets.add(input_buf);
 
     // Output buffer (default-initialized).
     let outputs: Vec<O> = vec![O::default(); setup.inputs.len()];
-    let mut output_buf = ShaderBuffer::from(outputs);
-    output_buf.buffer_description.usage |= BufferUsages::COPY_SRC;
+    let mut output_buf = encase_shader_buffer(&outputs);
+    output_buf.buffer_usage |= BufferUsages::COPY_SRC;
     let output_handle = buffer_assets.add(output_buf);
 
     // NOTE: We do NOT spawn the Readback entity here. It is spawned later
@@ -212,6 +215,24 @@ fn create_buffers<I, O>(
         output_handle,
         uniform_bytes: setup.uniform_bytes.clone(),
     });
+}
+
+/// Serializes `value` with `encase` storage-buffer layout into a [`ShaderBuffer`].
+///
+/// `ShaderBuffer`'s own constructors take `bytemuck` data, which would require
+/// `Pod` element types; this keeps the crate's `ShaderType`-based API and its
+/// std430 layout.
+fn encase_shader_buffer<T>(value: &T) -> ShaderBuffer
+where
+    T: ShaderType + encase::internal::WriteInto,
+{
+    #[allow(clippy::cast_possible_truncation)]
+    let size = value.size().get() as usize;
+    let mut wrapper = encase::StorageBuffer::<Vec<u8>>::new(Vec::with_capacity(size));
+    wrapper
+        .write(value)
+        .expect("Failed to serialize storage buffer");
+    ShaderBuffer::new(wrapper.into_inner(), RenderAssetUsages::default())
 }
 
 fn on_readback_complete<O>(trigger: On<ReadbackComplete>, mut commands: Commands)
@@ -315,7 +336,7 @@ fn check_timeout(deadline: Res<Deadline>, pipeline: Option<Res<TestPipeline>>) {
          Pipeline status: {pipeline_status}\n\
          \n\
          Common causes:\n\
-         - WGSL syntax error or failed #import resolution (check shader path)\n\
+         - WGSL syntax error or failed WESL import resolution (check shader path)\n\
          - Bind group layout mismatch between Rust types and WGSL declarations\n\
          - No GPU available in this environment\n\
          \n\
@@ -346,7 +367,7 @@ impl Plugin for ComputeTestPlugin {
             return;
         };
 
-        // The render graph is a schedule in Bevy 0.19: the compute dispatch is a
+        // The render graph is a schedule (since Bevy 0.19): the compute dispatch is a
         // system in the `RenderGraph` schedule (driven by `render_system`) rather
         // than a `render_graph::Node`. The dispatch flag is shared with the main
         // world via the same `Arc`, inserted into the render world here.
@@ -414,6 +435,7 @@ impl Plugin for ComputeTestPlugin {
             shader_defs: vec![],
             entry_point: Some(self.entry_point.clone().into()),
             zero_initialize_workgroup_memory: false,
+            constants: vec![],
         });
 
         render_app.insert_resource(TestPipeline {
@@ -428,7 +450,7 @@ impl Plugin for ComputeTestPlugin {
 // Compute dispatch system (runs in the `RenderGraph` schedule)
 // ============================================================================
 
-/// Records and dispatches the compute pass exactly once. In Bevy 0.19 the render
+/// Records and dispatches the compute pass exactly once. The render
 /// graph is a schedule, so this is a plain system taking [`RenderContext`] as a
 /// system parameter rather than a `render_graph::Node`.
 fn compute_test_system(

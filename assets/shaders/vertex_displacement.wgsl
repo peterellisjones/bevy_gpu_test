@@ -30,7 +30,7 @@ struct Output {
 @group(0) @binding(2) var<storage, read_write> outputs: array<Output>;
 
 // The function under test — a simple wave displacement.
-// In a real project this would be #imported from your vertex shader module.
+// In a real project this would be imported from your vertex shader module.
 fn wave_displace(pos: vec3<f32>, amplitude: f32, frequency: f32, time: f32) -> vec3<f32> {
     let wave = sin(pos.x * frequency + time) * cos(pos.z * frequency + time * 0.7);
     return vec3<f32>(pos.x, pos.y + wave * amplitude, pos.z);
